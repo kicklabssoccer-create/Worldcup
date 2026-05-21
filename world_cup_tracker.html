@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#DC2626" />
+  <title>World Cup 2026 Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #F5F1EA; }
+    body { font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    #root { min-height: 100vh; }
+    #boot { position: fixed; inset: 0; background: #F5F1EA; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: #1A1814; font-family: 'Anton', sans-serif; letter-spacing: 3px; z-index: 9999; }
+    #boot .spinner { width: 36px; height: 36px; border: 3px solid #E5DDD0; border-top-color: #DC2626; border-radius: 50%; animation: bootspin 1s linear infinite; }
+    @keyframes bootspin { to { transform: rotate(360deg); } }
+    #boot.hidden { display: none; }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="boot"><div class="spinner"></div><div>LOADING</div></div>
+  <div id="root"></div>
+  <script>
+    // localStorage shim for window.storage (matches the Claude artifact storage API)
+    window.storage = {
+      get: async (key) => {
+        const v = localStorage.getItem(key);
+        return v !== null ? { value: v } : null;
+      },
+      set: async (key, value) => { localStorage.setItem(key, value); return { value }; },
+      delete: async (key) => { localStorage.removeItem(key); return { deleted: true }; },
+    };
+  </script>
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+
+// ============== CONFIG ==============
+const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world";
+const CORS_PROXIES = [
+  (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
+const DATE_RANGE = "20260611-20260719";
+const POLL_INTERVAL = 30_000;
+const TOURNAMENT_START = new Date("2026-06-11T19:00:00Z").getTime();
+
+// ============== TEAMS & GROUPS ==============
+const GROUP_MAP = {
+  A: ["Mexico", "South Africa", "South Korea", "Czechia"],
+  B: ["Canada", "Switzerland", "Bosnia & Herzegovina", "Qatar"],
+  C: ["Brazil", "Morocco", "Haiti", "Scotland"],
+  D: ["USA", "Paraguay", "Australia", "Türkiye"],
+  E: ["Germany", "Ecuador", "Ivory Coast", "Curaçao"],
+  F: ["Netherlands", "Japan", "Sweden", "Tunisia"],
+  G: ["Belgium", "Egypt", "Iran", "New Zealand"],
+  H: ["Spain", "Uruguay", "Saudi Arabia", "Cape Verde"],
+  I: ["France", "Senegal", "Norway", "Iraq"],
+  J: ["Argentina", "Algeria", "Austria", "Jordan"],
+  K: ["Portugal", "Colombia", "Uzbekistan", "DR Congo"],
+  L: ["England", "Croatia", "Ghana", "Panama"],
+};
+
+const TEAM_COLORS = {
+  Mexico: "#006847", "South Africa": "#087D5A", "South Korea": "#CE2028", Czechia: "#D7141A",
+  Canada: "#D52B1E", Switzerland: "#D52B1E", "Bosnia & Herzegovina": "#002F6C", Qatar: "#8D1B3D",
+  Brazil: "#FEDF00", Morocco: "#C1272D", Haiti: "#00209F", Scotland: "#0065BD",
+  USA: "#0A3161", Paraguay: "#D52B1E", Australia: "#FFD700", "Türkiye": "#E30A17",
+  Germany: "#000000", Ecuador: "#FFD100", "Ivory Coast": "#FF8200", "Curaçao": "#002B7F",
+  Netherlands: "#FF6C00", Japan: "#BC002D", Sweden: "#006AA7", Tunisia: "#E70013",
+  Belgium: "#FAE042", Egypt: "#C8102E", Iran: "#239F40", "New Zealand": "#000000",
+  Spain: "#C60B1E", Uruguay: "#7FB3D5", "Saudi Arabia": "#006C35", "Cape Verde": "#003893",
+  France: "#0055A4", Senegal: "#00853F", Norway: "#BA0C2F", Iraq: "#CE1126",
+  Argentina: "#75AADB", Algeria: "#006233", Austria: "#ED2939", Jordan: "#000000",
+  Portugal: "#046A38", Colombia: "#FCD116", Uzbekistan: "#0099B5", "DR Congo": "#007FFF",
+  England: "#FFFFFF", Croatia: "#FF0000", Ghana: "#FFD700", Panama: "#005AA7",
+};
+
+const TEAM_ABBR = {
+  Mexico: "mex", "South Africa": "rsa", "South Korea": "kors", Czechia: "cze",
+  Canada: "can", Switzerland: "sui", "Bosnia & Herzegovina": "bih", Qatar: "qat",
+  Brazil: "bra", Morocco: "mar", Haiti: "hai", Scotland: "sco",
+  USA: "usa", Paraguay: "par", Australia: "aus", "Türkiye": "tur",
+  Germany: "ger", Ecuador: "ecu", "Ivory Coast": "civ", "Curaçao": "cuw",
+  Netherlands: "ned", Japan: "jpn", Sweden: "swe", Tunisia: "tun",
+  Belgium: "bel", Egypt: "egy", Iran: "irn", "New Zealand": "nzl",
+  Spain: "esp", Uruguay: "uru", "Saudi Arabia": "ksa", "Cape Verde": "cpv",
+  France: "fra", Senegal: "sen", Norway: "nor", Iraq: "irq",
+  Argentina: "arg", Algeria: "alg", Austria: "aut", Jordan: "jor",
+  Portugal: "por", Colombia: "col", Uzbekistan: "uzb", "DR Congo": "cod",
+  England: "eng", Croatia: "cro", Ghana: "gha", Panama: "pan",
+};
+
+// Real ESPN team IDs (collected via API). Used for roster fetching.
+const TEAM_IDS = {
+  Mexico: "203", "South Africa": "467", "South Korea": "451", Czechia: "450",
+  // Others discovered dynamically from scoreboard API; fallback handled gracefully.
+};
+
+const logoFor = (name) => TEAM_ABBR[name] ? `https://a.espncdn.com/i/teamlogos/countries/500/${TEAM_ABBR[name]}.png` : null;
+const normalize = (n) => (n || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const NAME_TO_GROUP = {};
+Object.entries(GROUP_MAP).forEach(([letter, names]) => names.forEach(n => { NAME_TO_GROUP[normalize(n)] = letter; }));
+const groupFor = (n) => NAME_TO_GROUP[normalize(n)] || "?";
+
+// ============== STATIC FALLBACK FIXTURES ==============
+const STATIC_FIXTURES = [
+  ["2026-06-11T19:00Z", "Mexico", "South Africa", "Estadio Banorte", "Mexico City", ["FOX", "Telemundo"]],
+  ["2026-06-12T02:00Z", "South Korea", "Czechia", "Estadio Akron", "Guadalajara", ["FS1"]],
+  ["2026-06-12T19:00Z", "USA", "Paraguay", "SoFi Stadium", "Los Angeles", ["FOX"]],
+  ["2026-06-12T22:00Z", "Canada", "Bosnia & Herzegovina", "BMO Field", "Toronto", ["FOX"]],
+  ["2026-06-13T16:00Z", "Brazil", "Morocco", "MetLife Stadium", "New Jersey", ["FOX"]],
+  ["2026-06-13T19:00Z", "Haiti", "Scotland", "Gillette Stadium", "Boston", ["FS1"]],
+  ["2026-06-14T16:00Z", "Germany", "Curaçao", "MetLife Stadium", "New Jersey", ["FOX"]],
+  ["2026-06-14T19:00Z", "Netherlands", "Japan", "MetLife Stadium", "New Jersey", ["FOX"]],
+  ["2026-06-14T22:00Z", "Sweden", "Tunisia", "Arrowhead Stadium", "Kansas City", ["FS1"]],
+  ["2026-06-15T01:00Z", "Ivory Coast", "Ecuador", "Lincoln Financial Field", "Philadelphia", ["FS1"]],
+  ["2026-06-15T16:00Z", "Spain", "Cape Verde", "Mercedes-Benz Stadium", "Atlanta", ["FOX"]],
+  ["2026-06-15T19:00Z", "Belgium", "Iran", "SoFi Stadium", "Los Angeles", ["FOX"]],
+  ["2026-06-15T22:00Z", "Uruguay", "Saudi Arabia", "Hard Rock Stadium", "Miami", ["FS1"]],
+  ["2026-06-16T01:00Z", "New Zealand", "Egypt", "BC Place", "Vancouver", ["FS1"]],
+  ["2026-06-16T17:00Z", "Argentina", "Algeria", "AT&T Stadium", "Dallas", ["FOX"]],
+  ["2026-06-16T21:00Z", "France", "Iraq", "Lincoln Financial Field", "Philadelphia", ["FOX"]],
+  ["2026-06-17T00:00Z", "Norway", "Senegal", "MetLife Stadium", "New Jersey", ["FS1"]],
+  ["2026-06-17T17:00Z", "Portugal", "Uzbekistan", "NRG Stadium", "Houston", ["FOX"]],
+  ["2026-06-17T20:00Z", "England", "Croatia", "AT&T Stadium", "Dallas", ["FOX"]],
+  ["2026-06-17T23:00Z", "Ghana", "Panama", "BMO Field", "Toronto", ["FS1"]],
+];
+
+const buildStaticEvents = () => STATIC_FIXTURES.map(([date, home, away, venue, city, broadcasts], i) => ({
+  id: `static-${i}`, date, state: "pre", statusDetail: "Scheduled",
+  completed: false, clock: null, period: null,
+  home: { name: home, short: home, abbr: TEAM_ABBR[home]?.toUpperCase(), logo: logoFor(home), color: TEAM_COLORS[home], score: "0" },
+  away: { name: away, short: away, abbr: TEAM_ABBR[away]?.toUpperCase(), logo: logoFor(away), color: TEAM_COLORS[away], score: "0" },
+  venue, venueCity: city, broadcasts, details: [],
+}));
+
+// ============== STORAGE HOOK ==============
+function useStoredValue(key, defaultValue) {
+  const [value, setValue] = useState(defaultValue);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await window.storage.get(key);
+        if (!cancelled && r?.value !== undefined) {
+          try { setValue(JSON.parse(r.value)); } catch { setValue(r.value); }
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [key]);
+  const update = async (v) => { setValue(v); try { await window.storage.set(key, JSON.stringify(v)); } catch {} };
+  return [value, update];
+}
+
+// ============== FETCH WITH FALLBACKS ==============
+async function fetchWithFallback(url) {
+  try {
+    const r = await fetch(url, { mode: "cors" });
+    if (r.ok) return await r.json();
+  } catch {}
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const r = await fetch(proxy(url));
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  throw new Error("Network unavailable");
+}
+
+// ============== SCOREBOARD HOOK ==============
+function useScoreboard() {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [source, setSource] = useState(null);
+  const [lastFetch, setLastFetch] = useState(null);
+  const pollRef = useRef(null);
+
+  const fetchScoreboard = useCallback(async () => {
+    try {
+      const data = await fetchWithFallback(`${ESPN_BASE}/scoreboard?dates=${DATE_RANGE}&limit=200`);
+      const parsed = (data.events || []).map(parseEvent).filter(Boolean);
+      if (parsed.length === 0) throw new Error("Empty");
+      setEvents(parsed);
+      setSource("live");
+      setLastFetch(new Date());
+    } catch {
+      setEvents(buildStaticEvents());
+      setSource("static");
+      setLastFetch(new Date());
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchScoreboard(); }, [fetchScoreboard]);
+
+  useEffect(() => {
+    const anyLive = events.some(e => e.state === "in");
+    if (anyLive && !pollRef.current && source === "live") {
+      pollRef.current = setInterval(fetchScoreboard, POLL_INTERVAL);
+    } else if (!anyLive && pollRef.current) {
+      clearInterval(pollRef.current); pollRef.current = null;
+    }
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [events, source, fetchScoreboard]);
+
+  return { events, loading, source, lastFetch, refresh: fetchScoreboard };
+}
+
+function parseEvent(ev) {
+  try {
+    const comp = ev.competitions?.[0]; if (!comp) return null;
+    const h = comp.competitors?.find(c => c.homeAway === "home") || comp.competitors?.[0];
+    const a = comp.competitors?.find(c => c.homeAway === "away") || comp.competitors?.[1];
+    if (!h || !a) return null;
+    const status = comp.status?.type || {};
+    const team = (c) => ({
+      id: c.team?.id, name: c.team?.displayName,
+      short: c.team?.shortDisplayName || c.team?.abbreviation,
+      abbr: c.team?.abbreviation,
+      logo: c.team?.logo || logoFor(c.team?.displayName),
+      color: c.team?.color ? `#${c.team.color}` : TEAM_COLORS[c.team?.displayName],
+      score: c.score, winner: c.winner, form: c.form,
+    });
+    return {
+      id: ev.id, date: ev.date, state: status.state,
+      statusDetail: status.shortDetail || status.detail,
+      clock: comp.status?.displayClock, period: comp.status?.period,
+      home: team(h), away: team(a),
+      venue: comp.venue?.fullName, venueCity: comp.venue?.address?.city,
+      broadcasts: (comp.broadcasts || []).flatMap(b => b.names || []),
+      details: comp.details || [],
+    };
+  } catch { return null; }
+}
+
+// ============== MATCH SUMMARY ==============
+function useMatchSummary(eventId) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!eventId || String(eventId).startsWith("static-")) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const j = await fetchWithFallback(`${ESPN_BASE}/summary?event=${eventId}`);
+        if (!cancelled) setData(j);
+      } catch {} finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [eventId]);
+  return { data, loading };
+}
+
+// ============== ROSTER FETCH ==============
+function useRoster(teamId) {
+  const [roster, setRoster] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!teamId) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const j = await fetchWithFallback(`${ESPN_BASE}/teams/${teamId}/roster`);
+        if (cancelled) return;
+        const athletes = j.athletes || j.team?.athletes || [];
+        const flat = Array.isArray(athletes[0]?.items)
+          ? athletes.flatMap(g => (g.items || []).map(p => ({ ...p, positionGroup: g.position })))
+          : athletes;
+        setRoster(flat);
+      } catch { if (!cancelled) setRoster([]); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [teamId]);
+  return { roster, loading };
+}
+
+// ============== PLAYER STATS AGGREGATION ==============
+// Computes goals/assists/cards for a player across all events
+function usePlayerStats(playerId, events) {
+  return useMemo(() => {
+    const stats = { goals: 0, assists: 0, yellow: 0, red: 0, matchesScored: [] };
+    if (!playerId) return stats;
+    events.forEach(e => {
+      (e.details || []).forEach(d => {
+        const involved = (d.athletesInvolved || []).map(a => a.id);
+        if (!involved.includes(playerId)) return;
+        if (d.scoringPlay) {
+          stats.goals++;
+          stats.matchesScored.push({ eventId: e.id, clock: d.clock?.displayValue, vs: e.home.id === d.team?.id ? e.away.name : e.home.name });
+        } else if (d.type?.text === "Assist" || d.type?.id === "93") {
+          stats.assists++;
+        } else if (d.type?.text?.includes("Yellow")) {
+          stats.yellow++;
+        } else if (d.type?.text?.includes("Red")) {
+          stats.red++;
+        }
+      });
+    });
+    return stats;
+  }, [playerId, events]);
+}
+
+// ============== ALERTS: detect new events for followed players ==============
+function useAlerts(events, followedPlayers, alertsEnabled, browserNotify) {
+  const [seen, setSeen] = useStoredValue("wc:seen-events", {});
+  const [activeAlert, setActiveAlert] = useState(null);
+
+  useEffect(() => {
+    if (!alertsEnabled || !followedPlayers.length) return;
+    const followedIds = new Set(followedPlayers.map(p => p.id));
+    const newAlerts = [];
+    const newSeen = { ...seen };
+
+    events.forEach(e => {
+      (e.details || []).forEach(d => {
+        const involved = (d.athletesInvolved || []).map(a => a.id);
+        const matchedId = involved.find(id => followedIds.has(id));
+        if (!matchedId) return;
+        const eventKey = `${e.id}-${d.clock?.displayValue || ""}-${d.type?.id || ""}-${matchedId}`;
+        if (newSeen[eventKey]) return;
+        newSeen[eventKey] = Date.now();
+        const player = followedPlayers.find(p => p.id === matchedId);
+        const athleteName = d.athletesInvolved?.find(a => a.id === matchedId)?.displayName || player.name;
+        let type = "EVENT", emoji = "📋";
+        if (d.scoringPlay) { type = "GOAL"; emoji = "⚽"; }
+        else if (d.type?.text === "Assist") { type = "ASSIST"; emoji = "🎯"; }
+        else if (d.type?.text?.includes("Yellow")) { type = "YELLOW CARD"; emoji = "🟨"; }
+        else if (d.type?.text?.includes("Red")) { type = "RED CARD"; emoji = "🟥"; }
+        else return; // skip unknown event types
+
+        newAlerts.push({
+          id: eventKey, type, emoji,
+          player: athleteName, team: player.teamName,
+          clock: d.clock?.displayValue || "",
+          eventId: e.id,
+          message: `${emoji} ${type}! ${athleteName} for ${player.teamName} (${d.clock?.displayValue || "—"})`
+        });
+      });
+    });
+
+    if (newAlerts.length > 0) {
+      setSeen(newSeen);
+      setActiveAlert(newAlerts[newAlerts.length - 1]);
+      if (browserNotify && "Notification" in window && Notification.permission === "granted") {
+        newAlerts.forEach(a => {
+          try { new Notification("World Cup Alert", { body: a.message, icon: "⚽" }); } catch {}
+        });
+      }
+    }
+  }, [events, followedPlayers, alertsEnabled, browserNotify, seen, setSeen]);
+
+  return { activeAlert, dismissAlert: () => setActiveAlert(null) };
+}
+
+// ============== UTILS ==============
+const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const fmtDateShort = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+const ymd = (iso) => iso?.slice(0, 10);
+function groupByDate(events) {
+  const m = {};
+  events.forEach(e => { (m[ymd(e.date)] = m[ymd(e.date)] || []).push(e); });
+  return Object.entries(m).sort(([a], [b]) => a.localeCompare(b));
+}
+
+// ============== SUBCOMPONENTS ==============
+function TeamLogo({ logo, size = 40, name }) {
+  const [err, setErr] = useState(false);
+  if (!logo || err) return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", background: "#E5DDD0",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "'Anton', sans-serif", fontSize: size * 0.32, color: "#8B8478",
+    }}>{(name || "?").slice(0, 3).toUpperCase()}</div>
+  );
+  return <img src={logo} alt={name || ""} width={size} height={size} onError={() => setErr(true)}
+    style={{ objectFit: "contain", filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.5))" }} />;
+}
+
+function StatusBadge({ event, small }) {
+  const { state, clock } = event;
+  let color = "#16A34A", text = "UPCOMING";
+  if (state === "in") { color = "#DC2626"; text = clock ? `LIVE ${clock}` : "LIVE"; }
+  else if (state === "post") { color = "#9CA3AF"; text = "FT"; }
+  return (
+    <span style={{
+      fontFamily: "'Anton', sans-serif", fontSize: small ? 9 : 10, letterSpacing: 2,
+      color, padding: small ? "2px 5px" : "3px 7px",
+      border: `1px solid ${color}`, borderRadius: 3,
+      display: "inline-flex", alignItems: "center",
+    }}>
+      {state === "in" && <span style={{
+        display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+        background: color, marginRight: 6, animation: "pulse 1.4s infinite",
+      }} />}{text}
+    </span>
+  );
+}
+
+function HeroMatchCard({ event, onTap }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const diff = Math.max(0, new Date(event.date).getTime() - now);
+  const days = Math.floor(diff / 86400000);
+  const hours = Math.floor((diff % 86400000) / 3600000);
+  const mins = Math.floor((diff % 3600000) / 60000);
+  const hc = event.home.color || "#FFFFFF";
+  const ac = event.away.color || "#FFFFFF";
+
+  return (
+    <button onClick={() => onTap(event)} style={{
+      width: "100%", border: "none", padding: 0, cursor: "pointer",
+      borderRadius: 16, overflow: "hidden", marginBottom: 18,
+      position: "relative", textAlign: "left", background: "#FFFFFF",
+      boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+    }}>
+      <div style={{ position: "absolute", inset: 0,
+        background: `linear-gradient(115deg, ${hc} 0%, ${hc} 48%, ${ac} 52%, ${ac} 100%)`, opacity: 0.85 }} />
+      <div style={{ position: "absolute", inset: 0,
+        background: "linear-gradient(180deg, transparent 0%, rgba(10,9,7,0.85) 100%)" }} />
+      <div style={{ position: "absolute", top: -20, right: -40, width: 200, height: 200,
+        borderRadius: "50%", border: "20px solid #F0EBE0" }} />
+
+      <div style={{ position: "relative", padding: "20px 18px 18px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <span style={{
+            fontFamily: "'Anton', sans-serif", fontSize: 10, letterSpacing: 3,
+            color: "#FAF7F0", background: "rgba(0,0,0,0.4)", padding: "3px 8px",
+            borderRadius: 3, backdropFilter: "blur(8px)",
+          }}>★ NEXT UP</span>
+          <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 10, letterSpacing: 2, color: "#FAF7F0CC" }}>
+            GROUP {groupFor(event.home.name)}
+          </span>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 8, marginBottom: 18 }}>
+          <div style={{ textAlign: "center" }}>
+            <TeamLogo logo={event.home.logo} name={event.home.short} size={56} />
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#FAF7F0", marginTop: 6, letterSpacing: 0.5, textShadow: "0 2px 4px rgba(0,0,0,0.5)" }}>
+              {event.home.name?.toUpperCase()}
+            </div>
+          </div>
+          <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 24, color: "#FAF7F0CC", letterSpacing: 2, padding: "0 6px" }}>VS</div>
+          <div style={{ textAlign: "center" }}>
+            <TeamLogo logo={event.away.logo} name={event.away.short} size={56} />
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#FAF7F0", marginTop: 6, letterSpacing: 0.5, textShadow: "0 2px 4px rgba(0,0,0,0.5)" }}>
+              {event.away.name?.toUpperCase()}
+            </div>
+          </div>
+        </div>
+
+        <div style={{
+          background: "rgba(0,0,0,0.55)", backdropFilter: "blur(10px)",
+          borderRadius: 10, padding: "10px 8px",
+          display: "flex", justifyContent: "space-around", marginBottom: 12,
+        }}>
+          {[[days, "DAYS"], [hours, "HRS"], [mins, "MIN"]].map(([n, l]) => (
+            <div key={l} style={{ textAlign: "center" }}>
+              <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: "#FAF7F0", lineHeight: 1 }}>{String(n).padStart(2, "0")}</div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 8, color: "#FAF7F099", letterSpacing: 2, marginTop: 2 }}>{l}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#FAF7F0CC", textAlign: "center", letterSpacing: 0.3 }}>
+          {fmtDateShort(event.date)} · {fmtTime(event.date)} · {event.venue}
+        </div>
+        {event.broadcasts?.length > 0 && (
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#FAF7F088", textAlign: "center", marginTop: 4, letterSpacing: 1 }}>
+            📺 {event.broadcasts.slice(0, 3).join(" · ")}
+          </div>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function MatchCard({ event, favorite, onTap }) {
+  const fav = favorite && (event.home.name === favorite || event.away.name === favorite);
+  const showScore = event.state === "in" || event.state === "post";
+  return (
+    <button onClick={() => onTap(event)} style={{
+      width: "100%", background: "linear-gradient(135deg, #FFFFFF 0%, #FAFAF7 100%)",
+      border: fav ? "1px solid #DC2626" : "1px solid #E5DDD0",
+      borderRadius: 12, padding: "14px 14px 14px 18px", marginBottom: 10,
+      cursor: "pointer", textAlign: "left", position: "relative", overflow: "hidden",
+    }}>
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0, width: 4,
+        background: `linear-gradient(180deg, ${event.home.color || "#DC2626"} 0%, ${event.away.color || "#16A34A"} 100%)`,
+      }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <StatusBadge event={event} small />
+          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#8B8478", letterSpacing: 1 }}>
+            GRP {groupFor(event.home.name)}
+          </span>
+        </div>
+        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#6B6359" }}>
+          {event.state === "pre" ? fmtTime(event.date) : (event.broadcasts[0] || "")}
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <TeamLogo logo={event.home.logo} name={event.home.short} size={36} />
+          <span style={{
+            fontFamily: "'Anton', sans-serif", fontSize: 15, color: "#1A1814",
+            letterSpacing: 0.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            fontWeight: event.home.winner ? 700 : 400,
+          }}>{(event.home.short || event.home.name || "").toUpperCase()}</span>
+        </div>
+        {showScore ? (
+          <span style={{
+            fontFamily: "'Anton', sans-serif", fontSize: 22, color: "#FAF7F0",
+            background: "#1A1814", padding: "4px 12px", borderRadius: 6, letterSpacing: 1,
+          }}>{event.home.score} — {event.away.score}</span>
+        ) : (
+          <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#A8A092" }}>VS</span>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "flex-end", minWidth: 0 }}>
+          <span style={{
+            fontFamily: "'Anton', sans-serif", fontSize: 15, color: "#1A1814",
+            letterSpacing: 0.5, textAlign: "right",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            fontWeight: event.away.winner ? 700 : 400,
+          }}>{(event.away.short || event.away.name || "").toUpperCase()}</span>
+          <TeamLogo logo={event.away.logo} name={event.away.short} size={36} />
+        </div>
+      </div>
+      <div style={{ marginTop: 10, fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", letterSpacing: 0.3 }}>
+        {fmtDateShort(event.date)} · {event.venue || "TBD"}{event.venueCity ? `, ${event.venueCity}` : ""}
+      </div>
+    </button>
+  );
+}
+
+function GroupCard({ letter, events, favorite, onTeamTap }) {
+  const teams = useMemo(() => {
+    const t = {};
+    (GROUP_MAP[letter] || []).forEach(n => {
+      t[n] = { name: n, short: n, logo: logoFor(n), p: 0, w: 0, gf: 0, ga: 0, gd: 0, pts: 0 };
+    });
+    events.forEach(e => {
+      if (groupFor(e.home.name) !== letter) return;
+      const h = t[e.home.name] || (t[e.home.name] = { name: e.home.name, short: e.home.short, logo: e.home.logo, p:0,w:0,gf:0,ga:0,gd:0,pts:0 });
+      const a = t[e.away.name] || (t[e.away.name] = { name: e.away.name, short: e.away.short, logo: e.away.logo, p:0,w:0,gf:0,ga:0,gd:0,pts:0 });
+      if (e.home.logo) h.logo = e.home.logo;
+      if (e.away.logo) a.logo = e.away.logo;
+      h.id = e.home.id || h.id; a.id = e.away.id || a.id;
+      if (e.state === "post") {
+        const hs = +e.home.score || 0, as = +e.away.score || 0;
+        h.p++; a.p++; h.gf+=hs; h.ga+=as; a.gf+=as; a.ga+=hs;
+        if (hs>as) { h.w++; h.pts+=3; } else if (hs<as) { a.w++; a.pts+=3; } else { h.pts++; a.pts++; }
+        h.gd = h.gf-h.ga; a.gd = a.gf-a.ga;
+      }
+    });
+    return Object.values(t).sort((x, y) => y.pts-x.pts || y.gd-x.gd || y.gf-x.gf);
+  }, [letter, events]);
+
+  return (
+    <div style={{
+      background: "linear-gradient(135deg, #FFFFFF 0%, #FAFAF7 100%)",
+      borderRadius: 12, padding: 14, marginBottom: 12, border: "1px solid #E5DDD0",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid #E5DDD0" }}>
+        <div style={{
+          background: "linear-gradient(135deg, #DC2626, #991B1B)", width: 36, height: 36, borderRadius: 8,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontFamily: "'Anton', sans-serif", fontSize: 24, color: "#FAF7F0", marginRight: 10,
+          boxShadow: "0 4px 12px rgba(220,38,38,0.3)",
+        }}>{letter}</div>
+        <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 16, color: "#1A1814", letterSpacing: 2 }}>GROUP {letter}</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "30px 1fr 26px 26px 32px 32px", gap: 6, fontSize: 9, color: "#A8A092", fontFamily: "'Inter', sans-serif", letterSpacing: 1, marginBottom: 6 }}>
+        <div></div><div></div>
+        <div style={{ textAlign: "center" }}>P</div><div style={{ textAlign: "center" }}>W</div>
+        <div style={{ textAlign: "center" }}>GD</div><div style={{ textAlign: "center" }}>PTS</div>
+      </div>
+      {teams.map((t, i) => (
+        <button key={t.name} onClick={() => onTeamTap(t)} style={{
+          width: "100%", display: "grid", gridTemplateColumns: "30px 1fr 26px 26px 32px 32px",
+          gap: 6, padding: "8px 0", border: "none", background: "transparent",
+          cursor: "pointer", borderBottom: i < teams.length - 1 ? "1px solid #E5DDD088" : "none",
+          alignItems: "center",
+        }}>
+          <TeamLogo logo={t.logo} name={t.short} size={22} />
+          <span style={{
+            fontFamily: "'Anton', sans-serif", fontSize: 13,
+            color: favorite === t.name ? "#DC2626" : "#1A1814", letterSpacing: 0.5,
+            textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{(t.short || t.name).toUpperCase()}</span>
+          <span style={{ textAlign: "center", fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#6B6359" }}>{t.p}</span>
+          <span style={{ textAlign: "center", fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#6B6359" }}>{t.w}</span>
+          <span style={{ textAlign: "center", fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#6B6359" }}>{t.gd > 0 ? `+${t.gd}` : t.gd}</span>
+          <span style={{ textAlign: "center", fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#1A1814" }}>{t.pts}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SectionLabel({ children, style }) {
+  return <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 11, letterSpacing: 2.5, color: "#6B6359", marginBottom: 8, ...style }}>{children}</div>;
+}
+
+function SectionTitle({ children, style, count }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 12, ...style }}>
+      <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 18, letterSpacing: 3, color: "#1A1814" }}>{children}</div>
+      {count != null && (
+        <div style={{
+          fontFamily: "'Anton', sans-serif", fontSize: 11, color: "#DC2626",
+          background: "#DC262622", padding: "2px 7px", borderRadius: 4, letterSpacing: 1,
+        }}>{count}</div>
+      )}
+      <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, #E5DDD0, transparent)" }} />
+    </div>
+  );
+}
+
+// ============== PLAYER CARD ==============
+function PlayerRow({ player, events, isFollowing, onTap }) {
+  const stats = usePlayerStats(player.id, events);
+  return (
+    <button onClick={() => onTap(player)} style={{
+      width: "100%", display: "flex", alignItems: "center", gap: 12,
+      padding: "10px 12px", background: isFollowing ? "#DC262611" : "#FFFFFFCC",
+      border: isFollowing ? "1px solid #DC262644" : "1px solid #E5DDD0",
+      borderRadius: 10, marginBottom: 6, cursor: "pointer", textAlign: "left",
+    }}>
+      {player.headshot?.href ? (
+        <img src={player.headshot.href} alt="" width={36} height={36}
+          style={{ borderRadius: "50%", background: "#E5DDD0", objectFit: "cover" }}
+          onError={(e) => { e.target.style.display = "none"; }} />
+      ) : (
+        <div style={{
+          width: 36, height: 36, borderRadius: "50%", background: "#E5DDD0",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontFamily: "'Anton', sans-serif", fontSize: 13, color: "#A8A092",
+        }}>{player.jersey || "—"}</div>
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#1A1814",
+          letterSpacing: 0.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>{(player.fullName || player.displayName || "").toUpperCase()}</div>
+        <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", marginTop: 2, letterSpacing: 0.5 }}>
+          {player.position?.abbreviation || player.position?.name || "—"}
+          {player.jersey && ` · #${player.jersey}`}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {stats.goals > 0 && <Pill icon="⚽" value={stats.goals} />}
+        {stats.assists > 0 && <Pill icon="🎯" value={stats.assists} />}
+        {isFollowing && <span style={{ color: "#DC2626", fontSize: 14 }}>★</span>}
+      </div>
+    </button>
+  );
+}
+
+function Pill({ icon, value, label }) {
+  return (
+    <span style={{
+      background: "#1A1814", padding: "3px 7px", borderRadius: 4,
+      fontFamily: "'Anton', sans-serif", fontSize: 11, color: "#FAF7F0",
+      display: "inline-flex", alignItems: "center", gap: 3,
+    }}>
+      {icon && <span style={{ fontSize: 10 }}>{icon}</span>}
+      {value}
+      {label && <span style={{ fontSize: 8, color: "#FAF7F088", letterSpacing: 1, marginLeft: 2 }}>{label}</span>}
+    </span>
+  );
+}
+
+// ============== PLAYER MODAL ==============
+function PlayerModal({ player, events, followedPlayers, onFollow, onClose, alertsEnabled }) {
+  const isFollowing = followedPlayers.some(p => p.id === player.id);
+  const stats = usePlayerStats(player.id, events);
+  const teamColor = TEAM_COLORS[player.teamName] || "#DC2626";
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      zIndex: 110, backdropFilter: "blur(8px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "#FFFFFF", width: "100%", maxWidth: 500,
+        borderRadius: "20px 20px 0 0", padding: 0, maxHeight: "85vh", overflowY: "auto",
+        border: "1px solid #E5DDD0", animation: "slideUp 0.3s ease-out",
+      }}>
+        <div style={{
+          background: `linear-gradient(180deg, ${teamColor} 0%, ${teamColor}44 70%, transparent 100%)`,
+          padding: "24px 24px 20px",
+        }}>
+          <div style={{ width: 40, height: 4, background: "#D5CFC3", borderRadius: 2, margin: "0 auto 18px" }} />
+          <div style={{ textAlign: "center" }}>
+            {player.headshot?.href ? (
+              <img src={player.headshot.href} alt="" width={100} height={100}
+                style={{ borderRadius: "50%", background: "#E5DFD3", objectFit: "cover", border: "3px solid #E5DFD3" }}
+                onError={(e) => { e.target.style.display = "none"; }} />
+            ) : (
+              <div style={{
+                width: 100, height: 100, borderRadius: "50%", background: "#E5DDD0",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontFamily: "'Anton', sans-serif", fontSize: 32, color: "#A8A092",
+                margin: "0 auto",
+              }}>{player.jersey || "?"}</div>
+            )}
+            <div style={{
+              fontFamily: "'Anton', sans-serif", fontSize: 24, color: "#FAF7F0",
+              letterSpacing: 0.5, marginTop: 12, textShadow: "0 2px 6px rgba(0,0,0,0.5)",
+            }}>{(player.fullName || player.displayName || "").toUpperCase()}</div>
+            <div style={{
+              fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#FAF7F0CC",
+              letterSpacing: 2, marginTop: 4,
+            }}>
+              {player.teamName?.toUpperCase()}
+              {player.position?.abbreviation && ` · ${player.position.abbreviation}`}
+              {player.jersey && ` · #${player.jersey}`}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: "0 24px 24px" }}>
+          {/* STATS */}
+          <SectionLabel>TOURNAMENT STATS</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 18 }}>
+            {[
+              ["⚽", stats.goals, "GOALS"],
+              ["🎯", stats.assists, "ASSISTS"],
+              ["🟨", stats.yellow, "YELLOW"],
+              ["🟥", stats.red, "RED"],
+            ].map(([icon, val, label]) => (
+              <div key={label} style={{
+                background: "#FFFFFF", border: "1px solid #E5DDD0", borderRadius: 8,
+                padding: "10px 6px", textAlign: "center",
+              }}>
+                <div style={{ fontSize: 16 }}>{icon}</div>
+                <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 22, color: "#1A1814", marginTop: 2 }}>{val}</div>
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 8, color: "#A8A092", letterSpacing: 1.5, marginTop: 2 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* FOLLOW */}
+          <button onClick={() => onFollow(player)} style={{
+            width: "100%",
+            background: isFollowing
+              ? "linear-gradient(135deg, #DC2626, #991B1B)"
+              : "transparent",
+            color: isFollowing ? "#FAF7F0" : "#DC2626", border: "1px solid #DC2626", padding: "14px",
+            borderRadius: 8, fontFamily: "'Anton', sans-serif", fontSize: 13,
+            letterSpacing: 2, cursor: "pointer", marginBottom: 10,
+            boxShadow: isFollowing ? "0 4px 16px rgba(220,38,38,0.3)" : "none",
+          }}>
+            {isFollowing ? "★ FOLLOWING — TAP TO UNFOLLOW" : "☆ FOLLOW THIS PLAYER"}
+          </button>
+
+          {isFollowing && (
+            <div style={{
+              background: "#FFFFFF", border: "1px solid #E5DDD0", borderRadius: 8,
+              padding: 12, fontFamily: "'Inter', sans-serif", fontSize: 11,
+              color: "#6B6359", lineHeight: 1.5, marginBottom: 12,
+            }}>
+              {alertsEnabled
+                ? "🔔 Alerts ON. You'll be notified when this player scores, assists, or gets carded."
+                : "🔕 Alerts are off. Enable them in the PLAYERS tab to get notified."}
+            </div>
+          )}
+
+          {/* GOAL HISTORY */}
+          {stats.matchesScored.length > 0 && (
+            <>
+              <SectionLabel>GOALS THIS TOURNAMENT</SectionLabel>
+              {stats.matchesScored.map((g, i) => (
+                <div key={i} style={{
+                  display: "flex", justifyContent: "space-between", padding: "8px 0",
+                  borderBottom: "1px solid #E5DDD088",
+                  fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#1A1814DD",
+                }}>
+                  <span>vs {g.vs}</span>
+                  <span style={{ color: "#A8A092" }}>{g.clock}</span>
+                </div>
+              ))}
+            </>
+          )}
+
+          <button onClick={onClose} style={{
+            width: "100%", background: "transparent", color: "#8B8478",
+            border: "1px solid #E5DDD0", padding: "12px", borderRadius: 8,
+            fontFamily: "'Anton', sans-serif", fontSize: 12, letterSpacing: 2,
+            cursor: "pointer", marginTop: 14,
+          }}>CLOSE</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== TEAM MODAL ==============
+function TeamModal({ team, events, favorite, onSetFavorite, onClose, onTapMatch, onTapPlayer, followedPlayers }) {
+  const group = groupFor(team.name);
+  const matches = events.filter(e => e.home.name === team.name || e.away.name === team.name);
+  const teamColor = TEAM_COLORS[team.name] || "#DC2626";
+
+  // Try to find team ID from events
+  const teamId = team.id || events.find(e => e.home.name === team.name)?.home.id || events.find(e => e.away.name === team.name)?.away.id || TEAM_IDS[team.name];
+  const { roster, loading: rosterLoading } = useRoster(teamId);
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      zIndex: 100, backdropFilter: "blur(8px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "#FFFFFF", width: "100%", maxWidth: 500,
+        borderRadius: "20px 20px 0 0", padding: 0, maxHeight: "88vh", overflowY: "auto",
+        border: "1px solid #E5DDD0", animation: "slideUp 0.3s ease-out",
+      }}>
+        <div style={{
+          background: `linear-gradient(180deg, ${teamColor} 0%, ${teamColor}66 60%, transparent 100%)`,
+          padding: "24px 24px 16px",
+        }}>
+          <div style={{ width: 40, height: 4, background: "#D5CFC3", borderRadius: 2, margin: "0 auto 18px" }} />
+          <div style={{ textAlign: "center" }}>
+            <TeamLogo logo={team.logo || logoFor(team.name)} name={team.short} size={80} />
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: "#FAF7F0", letterSpacing: 1, marginTop: 10, textShadow: "0 2px 6px rgba(0,0,0,0.5)" }}>
+              {team.name?.toUpperCase()}
+            </div>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#FAF7F0CC", letterSpacing: 2, marginTop: 4 }}>
+              GROUP {group}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: "0 24px 24px" }}>
+          <button onClick={() => onSetFavorite(favorite === team.name ? null : team.name)} style={{
+            width: "100%", background: favorite === team.name ? "#DC2626" : "transparent",
+            color: favorite === team.name ? "#FAF7F0" : "#DC2626", border: "1px solid #DC2626", padding: "12px", borderRadius: 8,
+            fontFamily: "'Anton', sans-serif", fontSize: 12, letterSpacing: 2,
+            cursor: "pointer", marginBottom: 18,
+          }}>{favorite === team.name ? "★ FOLLOWING TEAM" : "☆ FOLLOW THIS TEAM"}</button>
+
+          {/* ROSTER */}
+          <SectionLabel>SQUAD</SectionLabel>
+          {rosterLoading && (
+            <div style={{ padding: 12, fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#A8A092", textAlign: "center" }}>
+              Loading squad…
+            </div>
+          )}
+          {roster?.length > 0 ? (
+            <div style={{ marginBottom: 18 }}>
+              {roster.slice(0, 30).map(p => {
+                const playerObj = { ...p, teamName: team.name, teamId };
+                return (
+                  <PlayerRow key={p.id} player={playerObj} events={events}
+                    isFollowing={followedPlayers.some(fp => fp.id === p.id)}
+                    onTap={() => onTapPlayer(playerObj)} />
+                );
+              })}
+            </div>
+          ) : !rosterLoading && (
+            <div style={{
+              padding: 12, fontFamily: "'Inter', sans-serif", fontSize: 11,
+              color: "#A8A092", textAlign: "center", fontStyle: "italic",
+              marginBottom: 18,
+            }}>
+              Squad not yet announced. Check back closer to kickoff.
+            </div>
+          )}
+
+          {/* FIXTURES */}
+          <SectionLabel>FIXTURES & RESULTS</SectionLabel>
+          {matches.map(m => (
+            <button key={m.id} onClick={() => { onClose(); setTimeout(() => onTapMatch(m), 50); }} style={{
+              width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "10px 0", border: "none", borderBottom: "1px solid #E5DDD088",
+              background: "transparent", cursor: "pointer", textAlign: "left",
+            }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", letterSpacing: 1 }}>
+                  {fmtDateShort(m.date)} · {fmtTime(m.date)}
+                </div>
+                <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 13, color: "#1A1814", marginTop: 2, letterSpacing: 0.5 }}>
+                  {m.home.short?.toUpperCase()} vs {m.away.short?.toUpperCase()}
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                {m.state === "post" || m.state === "in"
+                  ? <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#1A1814" }}>{m.home.score}–{m.away.score}</span>
+                  : <StatusBadge event={m} small />}
+              </div>
+            </button>
+          ))}
+
+          <button onClick={onClose} style={{
+            width: "100%", background: "transparent", color: "#8B8478",
+            border: "1px solid #E5DDD0", padding: "12px", borderRadius: 8,
+            fontFamily: "'Anton', sans-serif", fontSize: 12, letterSpacing: 2,
+            cursor: "pointer", marginTop: 20,
+          }}>CLOSE</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== MATCH MODAL ==============
+function MatchModal({ event, allEvents, onClose, onTapPlayer, followedPlayers }) {
+  const { data: summary, loading: summaryLoading } = useMatchSummary(event.id);
+  const [preview, setPreview] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const live = allEvents.find(e => e.id === event.id) || event;
+
+  const goals = useMemo(() => {
+    const det = summary?.header?.competitions?.[0]?.details || live.details || [];
+    return det.filter(d => d.scoringPlay).map(d => ({
+      clock: d.clock?.displayValue || "",
+      scorer: d.athletesInvolved?.[0]?.displayName || d.athletesInvolved?.[0]?.fullName || "Unknown",
+      scorerId: d.athletesInvolved?.[0]?.id,
+      teamId: d.team?.id,
+    }));
+  }, [summary, live]);
+
+  const stats = useMemo(() => {
+    try {
+      const teams = summary?.boxscore?.teams;
+      if (!teams || teams.length < 2) return null;
+      const wanted = ["possessionPct", "totalShots", "shotsOnTarget", "wonCorners", "foulsCommitted", "yellowCards"];
+      const labels = { possessionPct: "Possession", totalShots: "Shots", shotsOnTarget: "On Target", wonCorners: "Corners", foulsCommitted: "Fouls", yellowCards: "Yellow Cards" };
+      const get = (t, k) => t.statistics?.find(s => s.name === k)?.displayValue ?? "—";
+      return wanted.map(k => ({ label: labels[k], home: get(teams[0], k), away: get(teams[1], k), isPossession: k === "possessionPct" }))
+        .filter(r => r.home !== "—" || r.away !== "—");
+    } catch { return null; }
+  }, [summary]);
+
+  async function generatePreview() {
+    setPreviewLoading(true); setPreviewError(""); setPreview("");
+    try {
+      const isPost = live.state === "post", isLive = live.state === "in";
+      const scoreStr = (isPost || isLive) ? `Score: ${live.home.short} ${live.home.score}-${live.away.score} ${live.away.short}.` : "";
+      const goalStr = goals.length ? `Goals: ${goals.map(g => `${g.scorer} (${g.clock})`).join("; ")}.` : "";
+      const prompt = isPost
+        ? `Write a sharp 100-word recap of this 2026 World Cup match: ${live.home.name} vs ${live.away.name}, Group ${groupFor(live.home.name)}, at ${live.venue}. ${scoreStr} ${goalStr} Cover the storyline, key moment, and what it means for the group. Plain prose, no headers.`
+        : isLive
+          ? `Write a brisk 90-word live update: ${live.home.name} vs ${live.away.name}, currently ${live.statusDetail}. ${scoreStr} ${goalStr} Describe the flow. Plain prose.`
+          : `Write a punchy 110-word preview for ${live.home.name} vs ${live.away.name}, Group ${groupFor(live.home.name)}, at ${live.venue} on ${fmtDateShort(live.date)}. Form: ${live.home.short} ${live.home.form || "N/A"}, ${live.away.short} ${live.away.form || "N/A"}. One player to watch per side, tactical angle, prediction. Plain prose.`;
+      let apiKey = localStorage.getItem("wc:anthropic-key");
+      if (!apiKey) {
+        apiKey = window.prompt("Paste your Anthropic API key (starts with sk-ant-...) to enable AI previews. Stored locally on your device only.");
+        if (!apiKey) { setPreviewError("AI previews need an Anthropic API key."); setPreviewLoading(false); return; }
+        localStorage.setItem("wc:anthropic-key", apiKey.trim());
+      }
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey.trim(),
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 500, messages: [{ role: "user", content: prompt }] }),
+      });
+      if (!res.ok) {
+        if (res.status === 401) { localStorage.removeItem("wc:anthropic-key"); throw new Error("Invalid key"); }
+        throw new Error("HTTP " + res.status);
+      }
+      const data = await res.json();
+      const text = (data.content || []).map(b => b.text || "").filter(Boolean).join("\n").trim();
+      if (!text) throw new Error("Empty");
+      setPreview(text);
+    } catch (e) { setPreviewError(e.message === "Invalid key" ? "Key rejected. Tap again to re-enter." : "Preview unavailable. Try again."); }
+    finally { setPreviewLoading(false); }
+  }
+
+  const previewLabel = live.state === "post" ? "AI RECAP" : live.state === "in" ? "AI LIVE UPDATE" : "AI PREVIEW";
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      zIndex: 100, backdropFilter: "blur(8px)",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "#FFFFFF", width: "100%", maxWidth: 500,
+        borderRadius: "20px 20px 0 0", padding: 24, maxHeight: "90vh", overflowY: "auto",
+        border: "1px solid #E5DDD0", animation: "slideUp 0.3s ease-out",
+      }}>
+        <div style={{ width: 40, height: 4, background: "#E5DDD0", borderRadius: 2, margin: "0 auto 18px" }} />
+
+        <div style={{ textAlign: "center", marginBottom: 14 }}>
+          <StatusBadge event={live} />
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#A8A092", letterSpacing: 1.5, marginTop: 8 }}>
+            GROUP {groupFor(live.home.name)} · {fmtDateShort(live.date)} · {fmtTime(live.date)}
+          </div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#8B8478", marginTop: 2 }}>
+            {live.venue}{live.venueCity ? `, ${live.venueCity}` : ""}
+          </div>
+          {live.broadcasts?.length > 0 && (
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", marginTop: 4, letterSpacing: 1 }}>
+              📺 {live.broadcasts.join(" · ")}
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center",
+          padding: "20px 0", borderTop: "1px solid #E5DDD0", borderBottom: "1px solid #E5DDD0", marginBottom: 16,
+        }}>
+          <div style={{ textAlign: "center" }}>
+            <TeamLogo logo={live.home.logo} name={live.home.short} size={56} />
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#1A1814", marginTop: 8, letterSpacing: 0.5 }}>
+              {live.home.name?.toUpperCase()}
+            </div>
+            {live.home.form && (
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 9, color: "#A8A092", letterSpacing: 1, marginTop: 4 }}>
+                FORM: {live.home.form}
+              </div>
+            )}
+          </div>
+          <div style={{ textAlign: "center", padding: "0 12px" }}>
+            {live.state === "pre" ? (
+              <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: "#DC2626", letterSpacing: 2 }}>VS</div>
+            ) : (
+              <>
+                <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 42, color: "#1A1814", lineHeight: 1 }}>
+                  {live.home.score} — {live.away.score}
+                </div>
+                {live.state === "in" && live.clock && (
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#DC2626", marginTop: 4, letterSpacing: 1 }}>{live.clock}</div>
+                )}
+              </>
+            )}
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <TeamLogo logo={live.away.logo} name={live.away.short} size={56} />
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#1A1814", marginTop: 8, letterSpacing: 0.5 }}>
+              {live.away.name?.toUpperCase()}
+            </div>
+            {live.away.form && (
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 9, color: "#A8A092", letterSpacing: 1, marginTop: 4 }}>
+                FORM: {live.away.form}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {goals.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <SectionLabel>⚽ GOALS</SectionLabel>
+            {goals.map((g, i) => {
+              const isHome = g.teamId === live.home.id;
+              return (
+                <div key={i} style={{
+                  display: "flex", justifyContent: isHome ? "flex-start" : "flex-end",
+                  alignItems: "center", padding: "6px 0", gap: 8,
+                }}>
+                  {isHome && <TeamLogo logo={live.home.logo} size={16} />}
+                  <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#1A1814DD" }}>
+                    {g.scorer} <span style={{ color: "#A8A092" }}>{g.clock}</span>
+                  </span>
+                  {!isHome && <TeamLogo logo={live.away.logo} size={16} />}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {stats && stats.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <SectionLabel>MATCH STATS</SectionLabel>
+            {stats.map((s, i) => {
+              const hN = parseFloat(String(s.home).replace("%", "")) || 0;
+              const aN = parseFloat(String(s.away).replace("%", "")) || 0;
+              const tot = hN + aN || 1;
+              const hP = s.isPossession ? hN : (hN / tot) * 100;
+              const aP = s.isPossession ? aN : (aN / tot) * 100;
+              return (
+                <div key={i} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 13, color: "#1A1814" }}>{s.home}</span>
+                    <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", letterSpacing: 1 }}>{s.label.toUpperCase()}</span>
+                    <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 13, color: "#1A1814" }}>{s.away}</span>
+                  </div>
+                  <div style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", background: "#E5DDD0" }}>
+                    <div style={{ width: `${hP}%`, background: "#DC2626" }} />
+                    <div style={{ width: `${aP}%`, background: "#16A34A", marginLeft: "auto" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {summaryLoading && (
+          <div style={{ textAlign: "center", padding: 8, color: "#A8A092", fontFamily: "'Inter', sans-serif", fontSize: 11 }}>
+            Loading match data…
+          </div>
+        )}
+
+        <SectionLabel style={{ marginTop: 8 }}>AI BREAKDOWN</SectionLabel>
+        {!preview && !previewLoading && (
+          <button onClick={generatePreview} style={{
+            width: "100%", background: "linear-gradient(135deg, #DC2626 0%, #991B1B 100%)",
+            color: "#FAF7F0", border: "none", padding: "14px", borderRadius: 8,
+            fontFamily: "'Anton', sans-serif", fontSize: 13, letterSpacing: 2,
+            cursor: "pointer", boxShadow: "0 4px 16px rgba(220,38,38,0.3)",
+          }}>⚡ GENERATE {previewLabel}</button>
+        )}
+        {previewLoading && (
+          <div style={{ textAlign: "center", padding: 20, color: "#6B6359", fontFamily: "'Inter', sans-serif", fontSize: 12 }}>
+            Generating…
+          </div>
+        )}
+        {previewError && (
+          <div style={{ color: "#DC2626", fontFamily: "'Inter', sans-serif", fontSize: 11, textAlign: "center", padding: 10 }}>
+            {previewError}
+          </div>
+        )}
+        {preview && (
+          <div style={{
+            background: "#FFFFFF", border: "1px solid #E5DDD0", borderRadius: 10,
+            padding: 14, fontFamily: "'Inter', sans-serif", fontSize: 13,
+            lineHeight: 1.6, color: "#1A1814DD", whiteSpace: "pre-wrap",
+          }}>{preview}</div>
+        )}
+
+        <button onClick={onClose} style={{
+          width: "100%", background: "transparent", color: "#8B8478",
+          border: "1px solid #E5DDD0", padding: "12px", borderRadius: 8,
+          fontFamily: "'Anton', sans-serif", fontSize: 12, letterSpacing: 2,
+          cursor: "pointer", marginTop: 16,
+        }}>CLOSE</button>
+      </div>
+    </div>
+  );
+}
+
+// ============== ALERT BANNER ==============
+function AlertBanner({ alert, onDismiss, onTap }) {
+  useEffect(() => {
+    if (!alert) return;
+    const t = setTimeout(onDismiss, 6000);
+    return () => clearTimeout(t);
+  }, [alert, onDismiss]);
+  if (!alert) return null;
+
+  return (
+    <div style={{
+      position: "fixed", top: 16, left: 16, right: 16, zIndex: 200,
+      background: "linear-gradient(135deg, #DC2626 0%, #991B1B 100%)",
+      borderRadius: 12, padding: "14px 16px",
+      boxShadow: "0 12px 40px rgba(220,38,38,0.5)",
+      animation: "slideDown 0.4s ease-out",
+      cursor: "pointer",
+    }} onClick={onTap}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ fontSize: 28 }}>{alert.emoji}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 14, color: "#FAF7F0", letterSpacing: 1.5 }}>
+            {alert.type}!
+          </div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#FAF7F0DD", marginTop: 2 }}>
+            {alert.player} · {alert.team} {alert.clock && `· ${alert.clock}`}
+          </div>
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onDismiss(); }} style={{
+          background: "rgba(0,0,0,0.3)", border: "none", color: "#FAF7F0",
+          width: 24, height: 24, borderRadius: "50%", cursor: "pointer", fontSize: 12,
+        }}>✕</button>
+      </div>
+    </div>
+  );
+}
+
+// ============== MAIN APP ==============
+function WorldCupTracker() {
+  const [tab, setTab] = useState("now");
+  const [favorite, setFavorite] = useStoredValue("wc:favorite", null);
+  const [followedPlayers, setFollowedPlayers] = useStoredValue("wc:players", []);
+  const [alertsEnabled, setAlertsEnabled] = useStoredValue("wc:alerts", true);
+  const [browserNotify, setBrowserNotify] = useStoredValue("wc:browser-notify", false);
+  const [openMatch, setOpenMatch] = useState(null);
+  const [openTeam, setOpenTeam] = useState(null);
+  const [openPlayer, setOpenPlayer] = useState(null);
+
+  const { events, loading, source, lastFetch } = useScoreboard();
+  const { activeAlert, dismissAlert } = useAlerts(events, followedPlayers, alertsEnabled, browserNotify);
+
+  const liveEvents = useMemo(() => events.filter(e => e.state === "in"), [events]);
+  const upcoming = useMemo(() => events.filter(e => e.state === "pre").sort((a, b) => a.date.localeCompare(b.date)), [events]);
+  const recent = useMemo(() => events.filter(e => e.state === "post").sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5), [events]);
+
+  const heroMatch = upcoming[0];
+  const restUpcoming = upcoming.slice(1, 15);
+
+  const allTeams = useMemo(() => {
+    const m = {};
+    events.forEach(e => { [e.home, e.away].forEach(t => { if (t.name && !m[t.name]) m[t.name] = t; }); });
+    Object.values(GROUP_MAP).flat().forEach(n => { if (!m[n]) m[n] = { name: n, short: n, logo: logoFor(n) }; });
+    return Object.values(m).sort((a, b) => a.name.localeCompare(b.name));
+  }, [events]);
+
+  const togglePlayer = (player) => {
+    if (followedPlayers.some(p => p.id === player.id)) {
+      setFollowedPlayers(followedPlayers.filter(p => p.id !== player.id));
+    } else {
+      setFollowedPlayers([...followedPlayers, {
+        id: player.id, name: player.fullName || player.displayName,
+        teamId: player.teamId, teamName: player.teamName,
+        position: player.position?.abbreviation,
+      }]);
+    }
+  };
+
+  const requestBrowserPermission = async () => {
+    if (!("Notification" in window)) return;
+    try {
+      const result = await Notification.requestPermission();
+      setBrowserNotify(result === "granted");
+    } catch { setBrowserNotify(false); }
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "radial-gradient(ellipse at top, #EFEAE0 0%, #F5F1EA 50%)",
+      fontFamily: "'Inter', sans-serif", color: "#1A1814", paddingBottom: 80,
+    }}>
+      <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;700&display=swap" rel="stylesheet" />
+      <style>{`
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+        @keyframes slideDown { from { transform: translateY(-150%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        * { box-sizing: border-box; }
+        button { transition: transform 0.15s ease; }
+        button:active { transform: scale(0.98); }
+      `}</style>
+
+      <AlertBanner alert={activeAlert} onDismiss={dismissAlert}
+        onTap={() => { const ev = events.find(e => e.id === activeAlert?.eventId); if (ev) { dismissAlert(); setOpenMatch(ev); } }} />
+
+      {/* HEADER */}
+      <div style={{
+        background: "linear-gradient(135deg, #DC2626 0%, #991B1B 60%, #7F1D1D 100%)",
+        padding: "22px 20px", position: "relative", overflow: "hidden",
+      }}>
+        <div style={{
+          position: "absolute", inset: 0,
+          background: "repeating-linear-gradient(115deg, transparent 0, transparent 40px, rgba(255,255,255,0.03) 40px, rgba(255,255,255,0.03) 80px)",
+        }} />
+        <div style={{ position: "absolute", top: -40, right: -40, width: 200, height: 200, borderRadius: "50%", border: "30px solid #F0EBE0" }} />
+        <div style={{ position: "absolute", bottom: -60, left: -60, width: 160, height: 160, borderRadius: "50%", border: "20px solid #F0EBE0" }} />
+
+        <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 9, letterSpacing: 4, color: "#FAF7F0AA", marginBottom: 2 }}>
+              FIFA · USA · CANADA · MEXICO
+            </div>
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 30, lineHeight: 0.9, letterSpacing: 1, color: "#FAF7F0" }}>WORLD CUP</div>
+            <div style={{
+              fontFamily: "'Anton', sans-serif", fontSize: 52, lineHeight: 0.9,
+              letterSpacing: -1, color: "#FAF7F0", marginTop: 2,
+              textShadow: "0 4px 12px rgba(0,0,0,0.3)",
+            }}>2026</div>
+          </div>
+          {liveEvents.length > 0 ? (
+            <div style={{
+              background: "rgba(0,0,0,0.4)", backdropFilter: "blur(10px)",
+              padding: "10px 14px", borderRadius: 8, textAlign: "center",
+            }}>
+              <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: "#FAF7F0" }}>{liveEvents.length}</div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 9, color: "#FAF7F0CC", letterSpacing: 2 }}>
+                <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#FAF7F0", marginRight: 4, animation: "pulse 1.4s infinite" }} />LIVE
+              </div>
+            </div>
+          ) : followedPlayers.length > 0 && (
+            <div style={{
+              background: "rgba(0,0,0,0.4)", backdropFilter: "blur(10px)",
+              padding: "8px 12px", borderRadius: 8, textAlign: "center",
+            }}>
+              <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 22, color: "#FAF7F0" }}>{followedPlayers.length}</div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 9, color: "#FAF7F0CC", letterSpacing: 2 }}>★ TRACKED</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* CONTENT */}
+      <div style={{ padding: "20px 16px" }}>
+        {loading && (
+          <div style={{ textAlign: "center", padding: 40 }}>
+            <div style={{
+              width: 32, height: 32, border: "3px solid #E5DDD0", borderTopColor: "#DC2626",
+              borderRadius: "50%", margin: "0 auto", animation: "spin 1s linear infinite",
+            }} />
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#A8A092", marginTop: 12, letterSpacing: 1 }}>LOADING…</div>
+          </div>
+        )}
+
+        {!loading && (
+          <>
+            {tab === "now" && (
+              <>
+                {liveEvents.length > 0 && (
+                  <>
+                    <SectionTitle count={liveEvents.length}>LIVE NOW</SectionTitle>
+                    {liveEvents.map(e => <MatchCard key={e.id} event={e} favorite={favorite} onTap={setOpenMatch} />)}
+                  </>
+                )}
+
+                {heroMatch && (
+                  <>
+                    {liveEvents.length === 0 && <SectionTitle>NEXT MATCH</SectionTitle>}
+                    <HeroMatchCard event={heroMatch} onTap={setOpenMatch} />
+                  </>
+                )}
+
+                {restUpcoming.length > 0 && (
+                  <>
+                    <SectionTitle count={upcoming.length}>UPCOMING</SectionTitle>
+                    {restUpcoming.map(e => <MatchCard key={e.id} event={e} favorite={favorite} onTap={setOpenMatch} />)}
+                  </>
+                )}
+
+                {recent.length > 0 && (
+                  <>
+                    <SectionTitle style={{ marginTop: 8 }}>RECENT RESULTS</SectionTitle>
+                    {recent.map(e => <MatchCard key={e.id} event={e} favorite={favorite} onTap={setOpenMatch} />)}
+                  </>
+                )}
+
+                {source === "static" && (
+                  <div style={{
+                    marginTop: 16, padding: 12, background: "#FFFFFF",
+                    border: "1px dashed #E5DDD0", borderRadius: 10,
+                    fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", lineHeight: 1.5,
+                  }}>
+                    ⚠️ Offline mode: showing cached fixtures. Live scores and squads will populate when connection returns.
+                  </div>
+                )}
+                {lastFetch && source === "live" && (
+                  <div style={{ textAlign: "center", marginTop: 16, fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#C5BFB3", letterSpacing: 1 }}>
+                    ESPN · UPDATED {lastFetch.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    {liveEvents.length > 0 && " · AUTO-REFRESH ON"}
+                  </div>
+                )}
+              </>
+            )}
+
+            {tab === "fixtures" && (
+              <>
+                <SectionTitle count={events.length}>ALL FIXTURES</SectionTitle>
+                {groupByDate(events).map(([date, list]) => (
+                  <div key={date} style={{ marginBottom: 18 }}>
+                    <div style={{
+                      fontFamily: "'Anton', sans-serif", fontSize: 12, letterSpacing: 3,
+                      color: "#DC2626", marginBottom: 10, paddingBottom: 6, borderBottom: "1px solid #E5DDD0",
+                    }}>{fmtDateShort(date).toUpperCase()}</div>
+                    {list.map(e => <MatchCard key={e.id} event={e} favorite={favorite} onTap={setOpenMatch} />)}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {tab === "groups" && (
+              <>
+                <SectionTitle>12 GROUPS · 48 TEAMS</SectionTitle>
+                {Object.keys(GROUP_MAP).map(letter => (
+                  <GroupCard key={letter} letter={letter} events={events} favorite={favorite} onTeamTap={setOpenTeam} />
+                ))}
+              </>
+            )}
+
+            {tab === "teams" && (
+              <>
+                <SectionTitle count={allTeams.length}>TEAMS</SectionTitle>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {allTeams.map(t => (
+                    <button key={t.name} onClick={() => setOpenTeam(t)} style={{
+                      background: favorite === t.name ? "#DC262622" : "#FFFFFF",
+                      border: favorite === t.name ? "1px solid #DC2626" : "1px solid #E5DDD0",
+                      borderRadius: 10, padding: "10px", display: "flex", alignItems: "center", gap: 8,
+                      cursor: "pointer", textAlign: "left",
+                    }}>
+                      <TeamLogo logo={t.logo} name={t.short} size={26} />
+                      <span style={{
+                        fontFamily: "'Anton', sans-serif", fontSize: 11, color: "#1A1814", letterSpacing: 0.5,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>{(t.short || t.name).toUpperCase()}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {tab === "players" && (
+              <>
+                <SectionTitle count={followedPlayers.length}>MY PLAYERS</SectionTitle>
+
+                {/* ALERT CONTROLS */}
+                <div style={{
+                  background: "linear-gradient(135deg, #FFFFFF 0%, #FAFAF7 100%)",
+                  border: "1px solid #E5DDD0", borderRadius: 12, padding: 14, marginBottom: 16,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 13, color: "#1A1814", letterSpacing: 1.5 }}>
+                        🔔 IN-APP ALERTS
+                      </div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", marginTop: 2 }}>
+                        Get a banner when your players score
+                      </div>
+                    </div>
+                    <Toggle on={alertsEnabled} onChange={() => setAlertsEnabled(!alertsEnabled)} />
+                  </div>
+                  <div style={{ height: 1, background: "#E5DDD0", margin: "10px 0" }} />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 13, color: "#1A1814", letterSpacing: 1.5 }}>
+                        📱 PUSH NOTIFICATIONS
+                      </div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 10, color: "#A8A092", marginTop: 2 }}>
+                        System notifications even when app is closed
+                      </div>
+                    </div>
+                    <Toggle on={browserNotify} onChange={() => browserNotify ? setBrowserNotify(false) : requestBrowserPermission()} />
+                  </div>
+                </div>
+
+                {/* FOLLOWED PLAYERS LIST */}
+                {followedPlayers.length === 0 ? (
+                  <div style={{
+                    background: "#FFFFFF", border: "1px dashed #E5DDD0", borderRadius: 12,
+                    padding: 24, textAlign: "center",
+                  }}>
+                    <div style={{ fontSize: 36, marginBottom: 8 }}>⚽</div>
+                    <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 15, color: "#1A1814", letterSpacing: 1.5, marginBottom: 6 }}>
+                      NO PLAYERS YET
+                    </div>
+                    <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#A8A092", lineHeight: 1.6 }}>
+                      Open the <strong style={{ color: "#1A1814" }}>TEAMS</strong> tab, pick a country, then tap any player in the squad to follow them and get goal alerts.
+                    </div>
+                  </div>
+                ) : (
+                  followedPlayers.map(p => {
+                    const playerEvents = events.filter(e => e.home.id === p.teamId || e.away.id === p.teamId);
+                    return (
+                      <PlayerRow key={p.id} player={{
+                        ...p, fullName: p.name,
+                        position: { abbreviation: p.position },
+                      }} events={playerEvents} isFollowing={true} onTap={() => setOpenPlayer(p)} />
+                    );
+                  })
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* BOTTOM TAB BAR */}
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0,
+        background: "rgba(255,255,255,0.95)", backdropFilter: "blur(20px)",
+        borderTop: "1px solid #E5DDD0",
+        display: "flex", justifyContent: "space-around",
+        padding: "10px 0 14px", zIndex: 50,
+      }}>
+        {[
+          { id: "now", label: "NOW", icon: "●" },
+          { id: "fixtures", label: "MATCHES", icon: "▦" },
+          { id: "groups", label: "GROUPS", icon: "▢" },
+          { id: "teams", label: "TEAMS", icon: "✦" },
+          { id: "players", label: "PLAYERS", icon: "★" },
+        ].map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            flex: 1, background: "transparent", border: "none",
+            padding: "6px 0", cursor: "pointer",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+          }}>
+            <span style={{ fontSize: 16, color: tab === t.id ? "#DC2626" : "#A8A092" }}>{t.icon}</span>
+            <span style={{
+              fontFamily: "'Anton', sans-serif", fontSize: 9, letterSpacing: 1.2,
+              color: tab === t.id ? "#1A1814" : "#A8A092",
+            }}>{t.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {openMatch && (
+        <MatchModal event={openMatch} allEvents={events}
+          onClose={() => setOpenMatch(null)}
+          followedPlayers={followedPlayers}
+          onTapPlayer={setOpenPlayer} />
+      )}
+      {openTeam && (
+        <TeamModal team={openTeam} events={events} favorite={favorite}
+          onSetFavorite={(t) => { setFavorite(t); setOpenTeam(null); }}
+          onTapMatch={setOpenMatch}
+          onTapPlayer={(p) => { setOpenTeam(null); setTimeout(() => setOpenPlayer(p), 50); }}
+          followedPlayers={followedPlayers}
+          onClose={() => setOpenTeam(null)} />
+      )}
+      {openPlayer && (
+        <PlayerModal player={openPlayer} events={events}
+          followedPlayers={followedPlayers}
+          alertsEnabled={alertsEnabled}
+          onFollow={togglePlayer}
+          onClose={() => setOpenPlayer(null)} />
+      )}
+    </div>
+  );
+}
+
+function Toggle({ on, onChange }) {
+  return (
+    <button onClick={onChange} style={{
+      width: 44, height: 24, borderRadius: 12,
+      background: on ? "#DC2626" : "#E5DDD0",
+      border: "none", cursor: "pointer", padding: 0, position: "relative",
+      transition: "background 0.2s",
+    }}>
+      <div style={{
+        position: "absolute", top: 2, left: on ? 22 : 2,
+        width: 20, height: 20, borderRadius: "50%", background: "#1A1814",
+        transition: "left 0.2s", boxShadow: "0 2px 4px rgba(0,0,0,0.3)",
+      }} />
+    </button>
+  );
+}
+
+const bootEl = document.getElementById("boot");
+if (bootEl) bootEl.classList.add("hidden");
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<WorldCupTracker />);
+  </script>
+</body>
+</html>
